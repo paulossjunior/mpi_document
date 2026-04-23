@@ -1,23 +1,58 @@
-# MPI Document ETL
+# Extract PDF Document
 
-Pipeline Python para extrair texto, tabelas e imagens de PDFs/imagens usando Docling.
+Pipeline ETL em Python para extrair dados de PDFs e imagens com Docling, separando a saida em texto, tabelas e imagens.
 
-O fluxo executa:
+Fluxo principal:
 
 ```text
-data/source -> Docling transform -> data/sink
+source folder -> Docling transform -> sink folder
 ```
+
+Fluxo adicional:
+
+```text
+sink folder -> MinIO
+```
+
+## O que o projeto faz
+
+- le documentos a partir de uma pasta source
+- usa Docling para interpretar PDF/imagem
+- separa texto, tabelas e imagens
+- cria uma pasta de sink por documento
+- envia o sink para MinIO
+- publica imagem Docker no GitHub Container Registry
+
+## Arquitetura
+
+O projeto segue o modelo:
+
+- `Source`: pasta local com arquivos de entrada
+- `Transform`: Docling, separando texto, imagens e tabelas
+- `Sink`: pasta local estruturada por documento
+
+Componentes principais:
+
+- `src/document_etl/sources/local_folder.py`
+- `src/document_etl/transforms/docling_transform.py`
+- `src/document_etl/sinks/folder_sink.py`
+- `src/document_etl/sinks/minio_sink.py`
+- `src/document_etl/flow.py`
+- `src/document_etl/minio_flow.py`
 
 ## Requisitos
 
 - Python 3.10+
-- Docling
+- Docker e Docker Compose, se quiser rodar via container
 
-As dependencias Python estao declaradas em `pyproject.toml`.
+Dependencias Python:
 
-## Instalar
+- `docling`
+- `minio`
+- `pandas`
+- `pydantic`
 
-Crie um ambiente virtual com Python 3.10+:
+## Instalacao local
 
 ```bash
 python3.12 -m venv .venv
@@ -26,148 +61,41 @@ python -m pip install --upgrade pip
 python -m pip install -e .
 ```
 
-## Executar
+## Como executar
 
-Coloque PDFs ou imagens em `data/source/`.
+Coloque seus arquivos em `data/source/`.
 
-Execute:
+Execute localmente:
 
 ```bash
 document-etl --source data/source --sink data/sink
 ```
 
-Ou, sem instalar o script:
+Ou:
 
 ```bash
 PYTHONPATH=src python -m document_etl.flow --source data/source --sink data/sink
 ```
 
-Na primeira execucao, o Docling pode baixar modelos de OCR/layout/tabela e demorar mais. Depois disso, ele tende a usar o cache local.
-
-## Docker
-
-Construa a imagem do projeto:
+Via Makefile:
 
 ```bash
-docker compose build etl upload-minio
+make run
 ```
 
-A imagem publicada no GitHub Packages fica em:
+Na primeira execucao o Docling pode baixar modelos e demorar mais.
+
+## Estrutura de entrada e saida
+
+Entrada:
 
 ```text
-ghcr.io/paulossjunior/mpi_document:latest
+data/source/
+  arquivo1.pdf
+  arquivo2.png
 ```
 
-Para baixar a imagem:
-
-```bash
-docker pull ghcr.io/paulossjunior/mpi_document:latest
-```
-
-Execute o ETL em Docker:
-
-```bash
-docker compose run --rm etl
-```
-
-Ou via Makefile:
-
-```bash
-make docker-build
-make docker-run
-```
-
-O container monta:
-
-```text
-${SOURCE_DIR:-./data/source} -> /app/data/source
-${SINK_DIR:-./data/sink}     -> /app/data/sink
-```
-
-Assim os PDFs/imagens continuam entrando por `data/source/` e a saida continua aparecendo em `data/sink/<document_id>/`.
-Se quiser usar outra pasta como source, passe `SOURCE_DIR` no comando:
-
-```bash
-SOURCE_DIR=/caminho/para/pdfs docker compose run --rm etl
-```
-
-Tambem da para trocar a pasta de saida:
-
-```bash
-SOURCE_DIR=/caminho/para/pdfs SINK_DIR=/caminho/para/sink docker compose run --rm etl
-```
-
-O Docker Compose tambem usa o volume `model-cache` para cachear modelos baixados pelo Docling/Hugging Face entre execucoes.
-
-Para subir MinIO e enviar o sink usando Docker:
-
-```bash
-docker compose up -d minio
-docker compose run --rm upload-minio
-```
-
-Ou:
-
-```bash
-make minio-up
-make docker-upload-minio
-```
-
-## MinIO
-
-Suba um MinIO local:
-
-```bash
-docker compose up -d minio
-```
-
-Console web:
-
-```text
-http://localhost:9001
-```
-
-Credenciais locais:
-
-```text
-usuario: minioadmin
-senha: minioadmin
-```
-
-Depois de executar o ETL e gerar `data/sink/<document_id>/`, envie tudo para o MinIO criando um bucket por documento:
-
-```bash
-sink-to-minio --sink data/sink --endpoint localhost:9000 --bucket document-etl --bucket-per-document
-```
-
-Ou via Makefile:
-
-```bash
-make minio-up
-make upload-minio
-```
-
-Cada pasta de documento vira um bucket separado. O nome do bucket usa `document-etl-<document_id>` sanitizado para as regras do MinIO/S3. Dentro dele, a estrutura do documento e preservada:
-
-```text
-document-etl-protocolo-ti-comboios-4aa8919b2f7e/
-  metadata.json
-  text/content.md
-  images/page_001.png
-  docling/document.json
-```
-
-## Saida
-
-Para cada documento, o sink cria:
-
-```text
-data/sink/<document_id>/
-```
-
-Na pratica, a pasta `data/sink` fica separada por documento. Dentro de cada documento ficam os artefatos separados por tipo:
-
-Regra do projeto: o sink sempre gera uma pasta por documento. Nenhum artefato de documento deve ser salvo diretamente na raiz de `data/sink`.
+Saida:
 
 ```text
 data/sink/
@@ -192,3 +120,195 @@ data/sink/
     errors/
       errors.jsonl
 ```
+
+Regra do projeto:
+
+- sempre gerar uma pasta por documento em `data/sink/<document_id>/`
+- nunca gravar artefatos do documento diretamente na raiz de `data/sink/`
+
+## Metadata gerada
+
+Cada documento recebe um `metadata.json` com:
+
+- `document_id`
+- origem do arquivo
+- nome e extensao
+- tamanho em bytes
+- hash SHA-256
+- status da conversao
+- contagem de blocos de texto, tabelas, imagens e erros
+
+## Docker
+
+Build das imagens:
+
+```bash
+docker compose build etl upload-minio
+```
+
+Executar ETL:
+
+```bash
+docker compose run --rm etl
+```
+
+Via Makefile:
+
+```bash
+make docker-build
+make docker-run
+```
+
+Volumes montados:
+
+```text
+${SOURCE_DIR:-./data/source} -> /app/data/source
+${SINK_DIR:-./data/sink}     -> /app/data/sink
+```
+
+Usando outra pasta local como source:
+
+```bash
+SOURCE_DIR=/caminho/para/pdfs docker compose run --rm etl
+```
+
+Usando outra pasta local para source e sink:
+
+```bash
+SOURCE_DIR=/caminho/para/pdfs SINK_DIR=/caminho/para/sink docker compose run --rm etl
+```
+
+O projeto usa o volume `model-cache` para reaproveitar modelos baixados pelo Docling.
+
+## MinIO
+
+Subir MinIO local:
+
+```bash
+docker compose up -d minio
+```
+
+Portas locais:
+
+- API/S3: `http://localhost:9000`
+- Console web: `http://localhost:9001`
+
+Credenciais locais:
+
+- usuario: `minioadmin`
+- senha: `minioadmin`
+
+Upload do sink para MinIO:
+
+```bash
+sink-to-minio --sink data/sink --endpoint localhost:9000 --bucket document-etl --bucket-per-document
+```
+
+Via Makefile:
+
+```bash
+make minio-up
+make upload-minio
+```
+
+Via Docker:
+
+```bash
+docker compose run --rm upload-minio
+```
+
+Com `--bucket-per-document`, cada pasta em `data/sink/` vira um bucket separado. Exemplo:
+
+```text
+document-etl-protocolo-ti-comboios-4aa8919b2f7e/
+  metadata.json
+  text/content.md
+  images/page_001.png
+  docling/document.json
+```
+
+## Comandos uteis
+
+Instalar ambiente:
+
+```bash
+make install
+```
+
+Executar ETL local:
+
+```bash
+make run
+```
+
+Subir MinIO:
+
+```bash
+make minio-up
+```
+
+Parar stack Docker:
+
+```bash
+make minio-down
+```
+
+Upload para MinIO:
+
+```bash
+make upload-minio
+```
+
+Limpar `__pycache__`:
+
+```bash
+make clean
+```
+
+## GitHub e imagem Docker
+
+Repositorio:
+
+```text
+https://github.com/paulossjunior/extract_pdf_document
+```
+
+Imagem Docker publicada:
+
+```text
+ghcr.io/paulossjunior/extract_pdf_document:latest
+```
+
+Pull da imagem:
+
+```bash
+docker pull ghcr.io/paulossjunior/extract_pdf_document:latest
+```
+
+Release atual:
+
+```text
+v0.1.0
+```
+
+## Exemplo de fluxo completo
+
+1. colocar PDFs/imagens em `data/source/`
+2. rodar o ETL
+3. validar a estrutura em `data/sink/`
+4. subir MinIO
+5. enviar o sink para os buckets no MinIO
+
+Exemplo:
+
+```bash
+make run
+make minio-up
+make upload-minio
+```
+
+## Observacoes
+
+- o Docling pode usar aceleracao local quando disponivel
+- a imagem Docker do ETL e relativamente grande por causa do stack de modelos
+- o bucket no MinIO e criado por documento quando `--bucket-per-document` esta ativo
