@@ -17,6 +17,8 @@ dependencies = [
 [project.scripts]
 document-etl = "document_etl.flow:main"
 sink-to-minio = "document_etl.minio_flow:main"
+minio-etl = "document_etl.minio_etl_flow:main"
+minio-etl-worker = "document_etl.minio_worker:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

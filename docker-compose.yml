@@ -27,7 +27,74 @@ services:
       MINIO_SECURE: "false"
     volumes:
       - ${SINK_DIR:-./data/sink}:/app/data/sink:ro
-    command: ["sink-to-minio", "--sink", "data/sink", "--endpoint", "minio:9000", "--bucket", "document-etl", "--bucket-per-document"]
+    command: ["sink-to-minio", "--sink", "data/sink", "--endpoint", "minio:9000", "--bucket", "${MINIO_BUCKET:-document-etl}", "--bucket-per-document"]
+
+  minio-etl:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    profiles:
+      - tools
+    depends_on:
+      - minio
+    environment:
+      MINIO_ENDPOINT: minio:9000
+      MINIO_BUCKET: ${MINIO_BUCKET:-document-etl}
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-minioadmin}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-minioadmin}
+      MINIO_SECURE: "false"
+      MINIO_SOURCE_BUCKET: ${MINIO_SOURCE_BUCKET:-source}
+    volumes:
+      - model-cache:/root/.cache
+    command:
+      [
+        "minio-etl",
+        "--source-bucket",
+        "${MINIO_SOURCE_BUCKET:-source}",
+        "--endpoint",
+        "minio:9000",
+        "--bucket",
+        "${MINIO_BUCKET:-document-etl}",
+        "--access-key",
+        "${MINIO_ACCESS_KEY:-minioadmin}",
+        "--secret-key",
+        "${MINIO_SECRET_KEY:-minioadmin}"
+      ]
+
+  minio-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    profiles:
+      - tools
+    depends_on:
+      - minio
+    environment:
+      MINIO_ENDPOINT: minio:9000
+      MINIO_BUCKET: ${MINIO_BUCKET:-document-etl}
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-minioadmin}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-minioadmin}
+      MINIO_SECURE: "false"
+      MINIO_SOURCE_BUCKET: ${MINIO_SOURCE_BUCKET:-source}
+      MINIO_POLL_INTERVAL: ${MINIO_POLL_INTERVAL:-10}
+    volumes:
+      - model-cache:/root/.cache
+    command:
+      [
+        "minio-etl-worker",
+        "--source-bucket",
+        "${MINIO_SOURCE_BUCKET:-source}",
+        "--endpoint",
+        "minio:9000",
+        "--bucket",
+        "${MINIO_BUCKET:-document-etl}",
+        "--access-key",
+        "${MINIO_ACCESS_KEY:-minioadmin}",
+        "--secret-key",
+        "${MINIO_SECRET_KEY:-minioadmin}",
+        "--poll-interval",
+        "${MINIO_POLL_INTERVAL:-10}"
+      ]
 
   minio:
     image: quay.io/minio/minio:latest

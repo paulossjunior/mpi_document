@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import mimetypes
 import os
 import re
@@ -36,7 +37,7 @@ class MinioSink:
 
         uploaded = 0
         for document_dir in document_dirs:
-            bucket_name = self._bucket_for_document(document_dir.name)
+            bucket_name = self._bucket_for_document_dir(document_dir)
             self._ensure_bucket(client, bucket_name)
             uploaded += self._upload_document_dir(client, document_dir)
         return uploaded
@@ -48,7 +49,7 @@ class MinioSink:
     def _upload_document_dir(self, client: object, document_dir: Path) -> int:
         uploaded = 0
         document_id = document_dir.name
-        bucket_name = self._bucket_for_document(document_id)
+        bucket_name = self._bucket_for_document_dir(document_dir)
 
         for file_path in sorted(document_dir.rglob("*")):
             if not file_path.is_file():
@@ -68,6 +69,13 @@ class MinioSink:
 
         return uploaded
 
+    def _bucket_for_document_dir(self, document_dir: Path) -> str:
+        if not self.bucket_per_document:
+            return self.bucket_name
+
+        bucket_source = self._source_bucket_name(document_dir) or document_dir.name
+        return self._bucket_for_document(bucket_source)
+
     def _bucket_for_document(self, document_id: str) -> str:
         if not self.bucket_per_document:
             return self.bucket_name
@@ -79,6 +87,24 @@ class MinioSink:
 
         keep = 63 - len(self.bucket_name) - 1
         return f"{self.bucket_name}-{suffix[:keep].strip('-')}"
+
+    @staticmethod
+    def _source_bucket_name(document_dir: Path) -> str | None:
+        metadata_path = document_dir / "metadata.json"
+        if not metadata_path.exists():
+            return None
+
+        try:
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+
+        source = metadata.get("source") or {}
+        filename = source.get("filename")
+        if not filename:
+            return None
+
+        return Path(filename).stem
 
     @staticmethod
     def _sanitize_bucket_part(value: str) -> str:

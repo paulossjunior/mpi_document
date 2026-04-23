@@ -13,6 +13,7 @@ class SourceDocument:
     extension: str
     size_bytes: int
     sha256: str
+    source_object_name: Optional[str] = None
 
 
 @dataclass

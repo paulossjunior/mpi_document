@@ -23,6 +23,7 @@ class FolderSink:
         text_dir = document_dir / "text"
         tables_dir = document_dir / "tables"
         images_dir = document_dir / "images"
+        source_dir = document_dir / "source"
         docling_dir = document_dir / "docling"
         errors_dir = document_dir / "errors"
 
@@ -31,6 +32,7 @@ class FolderSink:
             text_dir,
             tables_dir,
             images_dir,
+            source_dir,
             docling_dir,
             errors_dir,
         ):
@@ -43,6 +45,7 @@ class FolderSink:
         self._write_jsonl(text_dir / "blocks.jsonl", [asdict(block) for block in artifacts.text_blocks])
         self._write_tables(tables_dir, artifacts)
         self._write_images(images_dir, artifacts)
+        self._write_source_file(source_dir, artifacts)
         self._write_jsonl(errors_dir / "errors.jsonl", artifacts.errors)
         return document_dir
 
@@ -86,6 +89,11 @@ class FolderSink:
             )
 
         self._write_jsonl(images_dir / "images.jsonl", index_rows)
+
+    @staticmethod
+    def _write_source_file(source_dir: Path, artifacts: DocumentArtifacts) -> None:
+        target = source_dir / artifacts.source.filename
+        shutil.copy2(artifacts.source.path, target)
 
     @staticmethod
     def _metadata(artifacts: DocumentArtifacts) -> Dict[str, Any]:

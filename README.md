@@ -147,7 +147,7 @@ Cada documento recebe um `metadata.json` com:
 Build das imagens:
 
 ```bash
-docker compose build etl upload-minio
+docker compose build etl upload-minio minio-etl minio-worker
 ```
 
 Executar ETL:
@@ -184,6 +184,13 @@ SOURCE_DIR=/caminho/para/pdfs SINK_DIR=/caminho/para/sink docker compose run --r
 
 O projeto usa o volume `model-cache` para reaproveitar modelos baixados pelo Docling.
 
+Fluxos Docker disponiveis:
+
+- `etl`: pasta local `source -> sink`
+- `upload-minio`: `sink local -> MinIO`
+- `minio-etl`: `bucket source -> transform -> bucket destino`
+- `minio-worker`: worker continuo `bucket source -> transform -> bucket destino`
+
 ## MinIO
 
 Subir MinIO local:
@@ -201,6 +208,12 @@ Credenciais locais:
 
 - usuario: `minioadmin`
 - senha: `minioadmin`
+
+Prefixes usados no bucket de entrada do worker:
+
+- `source/`: arquivos novos aguardando processamento
+- `processing/`: arquivos ja reservados por um worker
+- `failed/`: arquivos que falharam no processamento
 
 Upload do sink para MinIO:
 
@@ -221,11 +234,43 @@ Via Docker:
 docker compose run --rm upload-minio
 ```
 
+ETL direto entre buckets no MinIO via Docker:
+
+```bash
+docker compose run --rm minio-etl
+```
+
+Worker continuo via Docker:
+
+```bash
+docker compose run --rm minio-worker
+```
+
+Via Makefile:
+
+```bash
+make docker-run-minio-etl
+make docker-run-worker
+```
+
+Fluxo do worker:
+
+```text
+source/<arquivo> -> processing/<arquivo> -> transform -> bucket destino -> delete
+```
+
+Se houver falha:
+
+```text
+source/<arquivo> -> processing/<arquivo> -> failed/<arquivo>
+```
+
 Com `--bucket-per-document`, cada pasta em `data/sink/` vira um bucket separado. Exemplo:
 
 ```text
 document-etl-protocolo-ti-comboios-4aa8919b2f7e/
   metadata.json
+  source/PROTOCOLO TI COMBOIOS .pdf
   text/content.md
   images/page_001.png
   docling/document.json
@@ -261,6 +306,18 @@ Upload para MinIO:
 
 ```bash
 make upload-minio
+```
+
+Rodar ETL bucket -> bucket em Docker:
+
+```bash
+make docker-run-minio-etl
+```
+
+Rodar worker em Docker:
+
+```bash
+make docker-run-worker
 ```
 
 Limpar `__pycache__`:
@@ -311,8 +368,28 @@ make minio-up
 make upload-minio
 ```
 
+Exemplo 100% Docker:
+
+```bash
+make docker-build
+make minio-up
+make docker-run-minio-etl
+```
+
+Exemplo 100% Docker com worker:
+
+```bash
+make docker-build
+make minio-up
+make docker-run-worker
+```
+
 ## Observacoes
 
 - o Docling pode usar aceleracao local quando disponivel
 - a imagem Docker do ETL e relativamente grande por causa do stack de modelos
 - o bucket no MinIO e criado por documento quando `--bucket-per-document` esta ativo
+- no fluxo bucket -> bucket, o arquivo original tambem e salvo em `source/<arquivo_original>` no bucket de destino
+- no worker, o arquivo e removido do bucket `source` somente apos processamento e upload com sucesso
+- no worker, o arquivo e primeiro movido para `processing/`, evitando que outro worker pegue o mesmo objeto no mesmo ciclo
+- em caso de erro, o arquivo vai para `failed/`
