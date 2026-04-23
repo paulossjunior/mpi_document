@@ -1,0 +1,46 @@
+services:
+  etl:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    profiles:
+      - tools
+    volumes:
+      - ${SOURCE_DIR:-./data/source}:/app/data/source:ro
+      - ${SINK_DIR:-./data/sink}:/app/data/sink
+      - model-cache:/root/.cache
+    command: ["document-etl", "--source", "data/source", "--sink", "data/sink"]
+
+  upload-minio:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    profiles:
+      - tools
+    depends_on:
+      - minio
+    environment:
+      MINIO_ENDPOINT: minio:9000
+      MINIO_BUCKET: document-etl
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
+      MINIO_SECURE: "false"
+    volumes:
+      - ${SINK_DIR:-./data/sink}:/app/data/sink:ro
+    command: ["sink-to-minio", "--sink", "data/sink", "--endpoint", "minio:9000", "--bucket", "document-etl", "--bucket-per-document"]
+
+  minio:
+    image: quay.io/minio/minio:latest
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    volumes:
+      - minio-data:/data
+
+volumes:
+  minio-data:
+  model-cache:
