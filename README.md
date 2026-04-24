@@ -9,40 +9,49 @@ Pipeline ETL em Python para extrair dados de PDFs e imagens com Docling, separan
 Fluxo principal:
 
 ```text
-source folder -> Docling transform -> sink folder
-```
-
-Fluxo adicional:
-
-```text
-sink folder -> MinIO
+MinIO source bucket -> Docling transform -> MinIO sink bucket
 ```
 
 ## O que o projeto faz
 
-- le documentos a partir de uma pasta source
-- usa Docling para interpretar PDF/imagem
-- separa texto, tabelas e imagens
-- cria uma pasta de sink por documento
-- envia o sink para MinIO
-- publica imagem Docker no GitHub Container Registry
+- le documentos PDF/imagem do bucket `source`
+- reserva os arquivos movendo da raiz do bucket para `processing/`
+- usa Docling para interpretar o documento
+- grava o resultado no bucket `sink`, isolado por `document_id`
+- remove o objeto de `processing/` quando o processamento termina com sucesso
+- move o objeto para `failed/` quando ha erro
+- recupera automaticamente objetos orfaos em `processing/` quando ficam parados alem do timeout de recuperacao
+- aplica um perfil completo em lotes para PDFs muito grandes, processando o documento inteiro por faixas de paginas para preservar texto, tabelas e imagens com mais estabilidade
 
 ## Arquitetura
 
-O projeto segue o modelo:
+```mermaid
+flowchart TD
+    A["Bucket source"] --> B["Prefect deployment ou minio-etl"]
+    B --> C["Claim do arquivo<br/>processing/"]
+    C --> D["Transform<br/>Docling"]
+    D --> E["Sink temporario no container"]
+    E --> F["Bucket sink<br/><document_id>/..."]
+    F --> G["Artefatos<br/>metadata text tables images docling errors source"]
+    D --> H["Falha"]
+    H --> I["Move para failed/"]
+```
 
-- `Source`: pasta local com arquivos de entrada
-- `Transform`: Docling, separando texto, imagens e tabelas
-- `Sink`: pasta local estruturada por documento
+Fluxo de objetos no bucket de entrada:
 
-Componentes principais:
+- raiz do bucket: arquivos novos aguardando processamento
+- `processing/`: arquivos em processamento
+- `failed/`: arquivos que falharam
 
-- `src/document_etl/sources/local_folder.py`
-- `src/document_etl/transforms/docling_transform.py`
-- `src/document_etl/sinks/folder_sink.py`
-- `src/document_etl/sinks/minio_sink.py`
-- `src/document_etl/flow.py`
-- `src/document_etl/minio_flow.py`
+Fluxo de objetos no bucket de saida:
+
+- `<document_id>/metadata.json`
+- `<document_id>/text/...`
+- `<document_id>/tables/...`
+- `<document_id>/images/...`
+- `<document_id>/docling/...`
+- `<document_id>/errors/...`
+- `<document_id>/source/<arquivo-original>`
 
 ## Requisitos
 
@@ -54,6 +63,7 @@ Dependencias Python:
 - `docling`
 - `minio`
 - `pandas`
+- `prefect`
 - `pydantic`
 
 ## Instalacao local
@@ -65,44 +75,178 @@ python -m pip install --upgrade pip
 python -m pip install -e .
 ```
 
+## Configuracao MinIO
+
+Variaveis principais:
+
+- `MINIO_ENDPOINT`: endpoint S3, exemplo `localhost:9000`
+- `MINIO_ACCESS_KEY`: usuario do MinIO
+- `MINIO_SECRET_KEY`: senha do MinIO
+- `MINIO_SOURCE_BUCKET`: bucket de entrada, padrao `source`
+- `MINIO_SINK_BUCKET`: bucket de saida, padrao `sink`
+- `MINIO_SOURCE_PREFIX`: prefixo opcional de entrada; por padrao vazio para processar a raiz do bucket
+- `MINIO_PROCESSING_PREFIX`: prefixo de claim, padrao `processing/`
+- `MINIO_FAILED_PREFIX`: prefixo de falha, padrao `failed/`
+- `MINIO_PROCESSING_RECOVERY_TIMEOUT_SECONDS`: tempo em segundos para retomar arquivos presos em `processing/`, padrao `300`
+- `MINIO_SINK_PREFIX`: prefixo opcional dentro do bucket sink
+- `LOG_DIR`: pasta local de logs, padrao `log`
+- `LARGE_DOCUMENT_PAGE_THRESHOLD`: acima desse numero de paginas o PDF entra em processamento por lotes, padrao `200`
+- `LARGE_DOCUMENT_SIZE_MB_THRESHOLD`: acima desse tamanho o PDF entra em processamento por lotes, padrao `20`
+- `LARGE_DOCUMENT_TIMEOUT`: timeout por lote no perfil de documento grande, padrao `900`
+- `LARGE_DOCUMENT_PAGE_CHUNK_SIZE`: quantidade de paginas por lote para PDFs grandes, padrao `25`
+- `PREFECT_ETL_INTERVAL_SECONDS`: intervalo da agenda do deployment Prefect, padrao `10`
+- `PREFECT_DEPLOYMENT_NAME`: nome do deployment exibido na UI do Prefect
+
 ## Como executar
 
-Coloque seus arquivos em `data/source/`.
-
-Execute localmente:
+Suba tudo com um comando unico via Docker:
 
 ```bash
-document-etl --source data/source --sink data/sink
+make docker-up
 ```
 
-Ou:
+Esse comando:
+
+- faz o build das imagens
+- sobe `minio`
+- executa `minio-init`
+- sobe o `prefect-server`
+- registra o deployment `prefect-etl`
+- deixa o ETL agendado e visivel na UI do Prefect
+
+Se voce preferir subir a infraestrutura por etapas, use:
 
 ```bash
-PYTHONPATH=src python -m document_etl.flow --source data/source --sink data/sink
+make minio-up
 ```
 
-Via Makefile:
+Isso sobe:
+
+- `minio`
+- `minio-init`, que garante a existencia dos buckets `source` e `sink`
+
+Portas locais:
+
+- API/S3: `http://localhost:9000`
+- Console web: `http://localhost:9001`
+- Prefect UI/API: `http://localhost:4200`
+
+Credenciais locais padrao:
+
+- usuario: `minioadmin`
+- senha: `minioadmin`
+
+### Execucao unica
+
+Processa todos os objetos disponiveis no bucket `source` e grava no bucket `sink`:
 
 ```bash
 make run
 ```
 
-Na primeira execucao o Docling pode baixar modelos e demorar mais.
+Ou:
 
-## Estrutura de entrada e saida
-
-Entrada:
-
-```text
-data/source/
-  arquivo1.pdf
-  arquivo2.png
+```bash
+minio-etl --source-bucket source --endpoint localhost:9000 --bucket sink
 ```
 
-Saida:
+### Prefect UI
+
+Quando o Compose sobe, o projeto registra um deployment Prefect com agenda de intervalo.
+Esse deployment pode ser acompanhado graficamente em:
+
+```bash
+http://localhost:4200
+```
+
+O intervalo padrao e de 10 segundos e pode ser alterado com:
+
+```bash
+PREFECT_ETL_INTERVAL_SECONDS=30 docker compose up --build
+```
+
+### Docker
+
+Build das imagens:
+
+```bash
+docker compose build minio-etl minio-worker prefect-etl
+```
+
+Execucao unica via Docker:
+
+```bash
+docker compose run --rm minio-etl
+```
+
+Stack completa com MinIO + Prefect:
+
+```bash
+docker compose up --build
+```
+
+Fluxo recomendado, sem rodar nada local:
+
+```bash
+make docker-up
+```
+
+Observacao:
+
+- `prefect-server` e `prefect-etl` sobem por padrao no `docker compose up`
+- `minio-etl` fica reservado para execucao manual one-shot
+- `minio-worker` fica reservado para o profile legado
+
+### Modo legado
+
+Se voce quiser o worker sem Prefect:
+
+```bash
+docker compose --profile legacy up minio-worker
+```
+
+Ou:
+
+```bash
+make docker-run-worker
+```
+
+O projeto usa o volume `model-cache` para reaproveitar modelos baixados pelo Docling.
+
+## Logs
+
+Os logs sao gravados por padrao em:
 
 ```text
-data/sink/
+log/minio_etl.log
+```
+
+Comportamento:
+
+- nivel padrao: `INFO`
+- gravacao em arquivo e tambem no stdout
+- no Docker, a pasta `./log` do projeto e montada em `/app/log`
+
+## Classes e Responsabilidades
+
+- `MinioDocumentEtlFlow`: coordena o fluxo completo `source -> transform -> sink`.
+- `prefect_minio_document_etl_flow`: publica o ETL como flow/deployment do Prefect com agenda e observabilidade pela UI.
+- `MinioBucketSource`: lista, faz claim e baixa objetos do bucket de entrada.
+- `DoclingTransform`: converte um arquivo de origem em texto, tabelas, imagens e metadados.
+- `FolderSink`: monta a estrutura canonica do sink em disco temporario.
+- `MinioSink`: envia a estrutura do sink para o bucket final no MinIO.
+- `SourceDocument`: representa um documento de entrada normalizado para processamento.
+- `TextBlock`: representa um bloco de texto extraido com ordem e proveniencia.
+- `TableArtifact`: representa uma tabela extraida em formatos serializaveis.
+- `ImageArtifact`: representa uma imagem de pagina, figura ou fallback do arquivo original.
+- `DocumentArtifacts`: agrega todo o resultado produzido para um documento.
+
+## Contrato do sink
+
+Cada documento gera um prefixo exclusivo no bucket `sink`:
+
+```text
+sink/
   <document_id>/
     metadata.json
     text/
@@ -123,12 +267,15 @@ data/sink/
       document.json
     errors/
       errors.jsonl
+    source/
+      arquivo-original.pdf
 ```
 
-Regra do projeto:
+Regras:
 
-- sempre gerar uma pasta por documento em `data/sink/<document_id>/`
-- nunca gravar artefatos do documento diretamente na raiz de `data/sink/`
+- cada documento e gravado em `<document_id>/...`
+- documentos diferentes nao compartilham o mesmo prefixo
+- o bucket sink e unico; o isolamento e por prefixo, nao por bucket
 
 ## Metadata gerada
 
@@ -141,255 +288,3 @@ Cada documento recebe um `metadata.json` com:
 - hash SHA-256
 - status da conversao
 - contagem de blocos de texto, tabelas, imagens e erros
-
-## Docker
-
-Build das imagens:
-
-```bash
-docker compose build etl upload-minio minio-etl minio-worker
-```
-
-Executar ETL:
-
-```bash
-docker compose run --rm etl
-```
-
-Via Makefile:
-
-```bash
-make docker-build
-make docker-run
-```
-
-Volumes montados:
-
-```text
-${SOURCE_DIR:-./data/source} -> /app/data/source
-${SINK_DIR:-./data/sink}     -> /app/data/sink
-```
-
-Usando outra pasta local como source:
-
-```bash
-SOURCE_DIR=/caminho/para/pdfs docker compose run --rm etl
-```
-
-Usando outra pasta local para source e sink:
-
-```bash
-SOURCE_DIR=/caminho/para/pdfs SINK_DIR=/caminho/para/sink docker compose run --rm etl
-```
-
-O projeto usa o volume `model-cache` para reaproveitar modelos baixados pelo Docling.
-
-Fluxos Docker disponiveis:
-
-- `etl`: pasta local `source -> sink`
-- `upload-minio`: `sink local -> MinIO`
-- `minio-etl`: `bucket source -> transform -> bucket destino`
-- `minio-worker`: worker continuo `bucket source -> transform -> bucket destino`
-
-## MinIO
-
-Subir MinIO local:
-
-```bash
-docker compose up -d minio
-```
-
-Portas locais:
-
-- API/S3: `http://localhost:9000`
-- Console web: `http://localhost:9001`
-
-Credenciais locais:
-
-- usuario: `minioadmin`
-- senha: `minioadmin`
-
-Prefixes usados no bucket de entrada do worker:
-
-- `source/`: arquivos novos aguardando processamento
-- `processing/`: arquivos ja reservados por um worker
-- `failed/`: arquivos que falharam no processamento
-
-Upload do sink para MinIO:
-
-```bash
-sink-to-minio --sink data/sink --endpoint localhost:9000 --bucket document-etl --bucket-per-document
-```
-
-Via Makefile:
-
-```bash
-make minio-up
-make upload-minio
-```
-
-Via Docker:
-
-```bash
-docker compose run --rm upload-minio
-```
-
-ETL direto entre buckets no MinIO via Docker:
-
-```bash
-docker compose run --rm minio-etl
-```
-
-Worker continuo via Docker:
-
-```bash
-docker compose run --rm minio-worker
-```
-
-Via Makefile:
-
-```bash
-make docker-run-minio-etl
-make docker-run-worker
-```
-
-Fluxo do worker:
-
-```text
-source/<arquivo> -> processing/<arquivo> -> transform -> bucket destino -> delete
-```
-
-Se houver falha:
-
-```text
-source/<arquivo> -> processing/<arquivo> -> failed/<arquivo>
-```
-
-Com `--bucket-per-document`, cada pasta em `data/sink/` vira um bucket separado. Exemplo:
-
-```text
-document-etl-protocolo-ti-comboios-4aa8919b2f7e/
-  metadata.json
-  source/PROTOCOLO TI COMBOIOS .pdf
-  text/content.md
-  images/page_001.png
-  docling/document.json
-```
-
-## Comandos uteis
-
-Instalar ambiente:
-
-```bash
-make install
-```
-
-Executar ETL local:
-
-```bash
-make run
-```
-
-Subir MinIO:
-
-```bash
-make minio-up
-```
-
-Parar stack Docker:
-
-```bash
-make minio-down
-```
-
-Upload para MinIO:
-
-```bash
-make upload-minio
-```
-
-Rodar ETL bucket -> bucket em Docker:
-
-```bash
-make docker-run-minio-etl
-```
-
-Rodar worker em Docker:
-
-```bash
-make docker-run-worker
-```
-
-Limpar `__pycache__`:
-
-```bash
-make clean
-```
-
-## GitHub e imagem Docker
-
-Repositorio:
-
-```text
-https://github.com/paulossjunior/extract_pdf_document
-```
-
-Imagem Docker publicada:
-
-```text
-ghcr.io/paulossjunior/extract_pdf_document:latest
-```
-
-Pull da imagem:
-
-```bash
-docker pull ghcr.io/paulossjunior/extract_pdf_document:latest
-```
-
-Release atual:
-
-```text
-v0.1.0
-```
-
-## Exemplo de fluxo completo
-
-1. colocar PDFs/imagens em `data/source/`
-2. rodar o ETL
-3. validar a estrutura em `data/sink/`
-4. subir MinIO
-5. enviar o sink para os buckets no MinIO
-
-Exemplo:
-
-```bash
-make run
-make minio-up
-make upload-minio
-```
-
-Exemplo 100% Docker:
-
-```bash
-make docker-build
-make minio-up
-make docker-run-minio-etl
-```
-
-Exemplo 100% Docker com worker:
-
-```bash
-make docker-build
-make minio-up
-make docker-run-worker
-```
-
-## Observacoes
-
-- o Docling pode usar aceleracao local quando disponivel
-- a imagem Docker do ETL e relativamente grande por causa do stack de modelos
-- o bucket no MinIO e criado por documento quando `--bucket-per-document` esta ativo
-- no fluxo bucket -> bucket, o arquivo original tambem e salvo em `source/<arquivo_original>` no bucket de destino
-- no worker, o arquivo e removido do bucket `source` somente apos processamento e upload com sucesso
-- no worker, o arquivo e primeiro movido para `processing/`, evitando que outro worker pegue o mesmo objeto no mesmo ciclo
-- em caso de erro, o arquivo vai para `failed/`

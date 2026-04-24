@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import shutil
 from dataclasses import asdict
 from pathlib import Path
@@ -8,16 +9,27 @@ from typing import Any, Dict, List
 
 from document_etl.models import DocumentArtifacts
 
+log = logging.getLogger(__name__)
+
 
 class FolderSink:
+    """Materialize transformed artifacts into the canonical sink directory layout.
+
+    Attributes:
+        sink_dir: Root directory where one subdirectory per document is written.
+    """
+
     def __init__(self, sink_dir: Path) -> None:
         self.sink_dir = sink_dir
 
     def write(self, artifacts: DocumentArtifacts) -> Path:
+        """Write one document and return the root directory of its sink."""
         document_id = artifacts.source.document_id
+        log.info("writing folder sink document_id=%s sink_dir=%s", document_id, self.sink_dir)
         # Contract: every sink write owns exactly one document folder.
         document_dir = self.sink_dir / document_id
         if document_dir.exists():
+            log.debug("removing previous sink directory path=%s", document_dir)
             shutil.rmtree(document_dir)
 
         text_dir = document_dir / "text"
@@ -47,9 +59,12 @@ class FolderSink:
         self._write_images(images_dir, artifacts)
         self._write_source_file(source_dir, artifacts)
         self._write_jsonl(errors_dir / "errors.jsonl", artifacts.errors)
+        log.info("finished folder sink document_id=%s path=%s", document_id, document_dir)
         return document_dir
 
     def _write_tables(self, tables_dir: Path, artifacts: DocumentArtifacts) -> None:
+        """Write each extracted table plus a JSONL index describing them."""
+        log.debug("writing tables document_id=%s count=%s", artifacts.source.document_id, len(artifacts.tables))
         index_rows = []
         for table in artifacts.tables:
             table_id = f"table_{table.index:03d}"
@@ -72,6 +87,8 @@ class FolderSink:
         self._write_jsonl(tables_dir / "tables.jsonl", index_rows)
 
     def _write_images(self, images_dir: Path, artifacts: DocumentArtifacts) -> None:
+        """Write extracted images and an index with image-level metadata."""
+        log.debug("writing images document_id=%s count=%s", artifacts.source.document_id, len(artifacts.images))
         index_rows = []
         for image in artifacts.images:
             image_path = images_dir / image.filename
@@ -92,15 +109,20 @@ class FolderSink:
 
     @staticmethod
     def _write_source_file(source_dir: Path, artifacts: DocumentArtifacts) -> None:
+        """Copy the original file into the sink for traceability and replay."""
         target = source_dir / artifacts.source.filename
+        log.debug("copying original source into sink target=%s", target)
         shutil.copy2(artifacts.source.path, target)
 
     @staticmethod
     def _metadata(artifacts: DocumentArtifacts) -> Dict[str, Any]:
+        """Summarize the conversion result in a stable metadata document."""
         return {
             "document_id": artifacts.source.document_id,
             "source": asdict(artifacts.source),
             "status": artifacts.status,
+            "processing_profile": artifacts.processing_profile,
+            "diagnostics": artifacts.diagnostics,
             "counts": {
                 "text_blocks": len(artifacts.text_blocks),
                 "tables": len(artifacts.tables),
@@ -111,10 +133,12 @@ class FolderSink:
 
     @staticmethod
     def _write_text(path: Path, content: str) -> None:
+        """Write plain text content to disk using UTF-8 encoding."""
         path.write_text(content or "", encoding="utf-8")
 
     @staticmethod
     def _write_json(path: Path, content: Any) -> None:
+        """Write formatted JSON to disk."""
         path.write_text(
             json.dumps(content, ensure_ascii=False, indent=2, default=str),
             encoding="utf-8",
@@ -122,6 +146,7 @@ class FolderSink:
 
     @staticmethod
     def _write_jsonl(path: Path, rows: List[Dict[str, Any]]) -> None:
+        """Write JSON lines content to disk."""
         with path.open("w", encoding="utf-8") as file:
             for row in rows:
                 file.write(json.dumps(row, ensure_ascii=False, default=str))

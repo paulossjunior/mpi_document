@@ -11,14 +11,13 @@ dependencies = [
   "docling>=2.91.0",
   "minio>=7.2,<8",
   "pandas>=2.0.0",
+  "prefect>=3.1,<4",
   "pydantic>=2.0.0",
 ]
 
 [project.scripts]
-document-etl = "document_etl.flow:main"
-sink-to-minio = "document_etl.minio_flow:main"
 minio-etl = "document_etl.minio_etl_flow:main"
-minio-etl-worker = "document_etl.minio_worker:main"
+prefect-etl-serve = "document_etl.prefect_flow:serve_main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -26,4 +26,4 @@ RUN python -m pip install --upgrade pip \
       torchvision==0.26.0 \
     && python -m pip install .
 
-CMD ["document-etl", "--source", "data/source", "--sink", "data/sink"]
+CMD ["minio-etl", "--worker"]
